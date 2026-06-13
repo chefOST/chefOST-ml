@@ -43,10 +43,10 @@ sam2_image = (
 with sam2_image.imports():
     import os
     import subprocess
+    import comet_ml          # import before torch so auto-logging hooks attach
     import numpy as np
     import torch
     from PIL import Image
-    import comet_ml
     from sam2.build_sam import build_sam2_video_predictor
 
 CKPT = "/sam2/checkpoints/sam2.1_hiera_large.pt"
@@ -105,7 +105,11 @@ def run_sam2(video_bytes: bytes, prompt_point=None, prompt_label=None, log_every
 
     predictor = build_sam2_video_predictor(CFG, CKPT)
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        state = predictor.init_state(video_path="/tmp/frames")
+        state = predictor.init_state(
+            video_path="/tmp/frames",
+            offload_video_to_cpu=True,    # keep frames in CPU RAM, not VRAM
+            offload_state_to_cpu=True,    # keep the growing memory bank on CPU
+        )
         predictor.add_new_points_or_box(
             inference_state=state,
             frame_idx=0,
@@ -120,7 +124,8 @@ def run_sam2(video_bytes: bytes, prompt_point=None, prompt_label=None, log_every
             frame = np.array(
                 Image.open(f"/tmp/frames/{frame_names[frame_idx]}").convert("RGB")
             )
-            exp.log_image(_overlay(frame, mask), name=f"frame_{frame_idx:05d}")
+            overlay = Image.fromarray(_overlay(frame, mask))
+            exp.log_image(overlay, name=f"frame_{frame_idx:05d}")
             exp.log_metric("mask_area_px", int(mask.sum()), step=frame_idx)
 
     exp.end()
