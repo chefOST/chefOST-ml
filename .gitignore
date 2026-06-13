@@ -1,0 +1,6 @@
+.venv/
+sam2/
+frames/
+*.mp4
+__pycache__/
+*.pyc
