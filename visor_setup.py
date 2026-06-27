@@ -78,7 +78,7 @@ def setup():
     print("\n>>> converting...")
     subprocess.run(
         "python /VISOR-VOS/visor_to_davis.py "
-        "-set val -keep_first_frame_masks_only 1 "
+        "-set val -keep_first_frame_masks_only 0 "
         "-visor_jsons_root /data/sparse/annotations "
         "-images_root /data/sparse/rgb_frames/val "
         "-output_directory /data/out_data",
