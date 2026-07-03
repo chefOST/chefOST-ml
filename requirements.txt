@@ -1,0 +1,13 @@
+opencv-python
+Pillow
+PyYAML
+numpy
+
+# Optional GPU pipeline dependencies for src/object_state_tracking.py
+# Install torch matching your CUDA environment when running locally.
+torch
+accelerate
+transformers
+safetensors
+wandb
+modal
