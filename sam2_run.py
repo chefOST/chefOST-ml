@@ -33,6 +33,8 @@ image = (
         "cd /sam2 && pip install -e .",
         "cd /sam2/checkpoints && ./download_ckpts.sh",
     )
+    # ship crop.py to the container so `from crop import crop_mask` resolves
+    .add_local_python_source("crop")
 )
 
 
@@ -50,6 +52,7 @@ def run():
     from PIL import Image
     import wandb
     from sam2.build_sam import build_sam2_video_predictor
+    from crop import crop_mask
 
     DATA = "/data/out_data/VISOR_2022"
     JPEG_ROOT = f"{DATA}/JPEGImages/480p"
@@ -102,8 +105,11 @@ def run():
         for i, src in enumerate(frame_files):
             os.symlink(os.path.abspath(src), f"{staging_dir}/{i:05d}.jpg")
 
-        table = wandb.Table(columns=["frame_idx", "result", "iou"])
+        table = wandb.Table(columns=["frame_idx", "result", "iou", "crop"])
         ious = []
+
+        crops_dir = f"{DATA}/Crops/{seq}"
+        os.makedirs(crops_dir, exist_ok=True)
 
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             state = predictor.init_state(video_path=staging_dir)
@@ -132,7 +138,14 @@ def run():
                         iou = float(inter / union)
                         ious.append(iou)
 
-                table.add_data(f_idx, wb_img, iou)
+                # crop the masked ingredient region for downstream VLM input
+                crop = crop_mask(img, pred)   # 25% padding, no white-out (see crop.py)
+                wb_crop = None
+                if crop is not None:
+                    Image.fromarray(crop).save(f"{crops_dir}/{name}.png")
+                    wb_crop = wandb.Image(crop)
+
+                table.add_data(f_idx, wb_img, iou, wb_crop)
 
         wandb.log({"panel": table})
         mean_iou = sum(ious) / len(ious) if ious else None
@@ -151,6 +164,7 @@ def run():
     results = {}
     for seq in sequences:
         wandb.init(entity="chefOST", project="justin_runs", name=f"m1_sam2_{seq}",
+                   group="sam2_vlm_llava_next", tags=["sam2", "sam2.1_hiera_large"],
                    config={"tracker": "sam2.1_hiera_large", "seq": seq}, reinit=True)
         try:
             results[seq] = eval_one(seq)
@@ -159,6 +173,9 @@ def run():
             results[seq] = None
         finally:
             wandb.finish()
+
+    # persist the crops written to the volume this run
+    volume.commit()
 
     # --- overall summary across sequences ---
     print("\n==== SUMMARY ====")
