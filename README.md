@@ -33,9 +33,9 @@ python3 scripts/inspect_video.py
 Install local tools (FFmpeg must also be on `PATH`):
 
 ```bash
-python3 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements-moscato.txt
+uv pip install -r requirements-moscato.txt
 ```
 
 Decode every raw frame first, then select and zero-base the configured clip:
@@ -93,9 +93,20 @@ modal volume put \
   tubelet-data \
   work/S12_Sandwich_7150991-2470/mask.png \
   /S12_Sandwich_7150991-2470/mask.png
+
+modal volume put \
+  tubelet-data \
+  vocabulary/CMU/state_dict.json \
+  /S12_Sandwich_7150991-2470/state_dict.json
 ```
 
-Run after the secret exists:
+First run TubeletGraph's bundled example after the secret exists:
+
+```bash
+modal run modal_tubelet.py --smoke-test
+```
+
+Only after that succeeds, run S12:
 
 ```bash
 modal run modal_tubelet.py \
@@ -104,8 +115,10 @@ modal run modal_tubelet.py \
 ```
 
 The runner verifies CUDA, mask shape/values, and contiguous frame names before
-starting. It persists predictions, VLM responses, visualizations, a run log,
-and a manifest beneath:
+starting. The image pins TubeletGraph commit
+`fdb05b6fbd7f4644aea990bf967cc18d82bf291b` and uses an A100 80 GB GPU. It
+persists predictions, raw VLM responses, mapped event JSON, visualizations, a
+run log, and a manifest beneath:
 
 ```text
 /S12_Sandwich_7150991-2470/runs/<run-name>/
@@ -117,8 +130,13 @@ the tracked mask stays on the bread.
 
 ## Convert and evaluate a validated run
 
-After downloading a run, locate the VLM-enriched prediction JSON under its
-`predictions/` tree. Build a draft that preserves every raw TubeletGraph node:
+The Modal runner automatically writes `tubelet_events.draft.json` and the
+closed-vocabulary `tubelet_events.json` beside the run manifest. The following
+commands are the reproducible fallback if the adapter needs to be rerun from a
+downloaded raw prediction.
+
+Locate the VLM-enriched prediction JSON under the run's `predictions/` tree and
+build a draft that preserves every raw TubeletGraph node:
 
 ```bash
 python3 scripts/build_event_draft.py \
