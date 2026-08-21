@@ -4,3 +4,17 @@ frames/
 *.mp4
 __pycache__/
 *.pyc
+
+# TubeletGraph x MOSCATO local inputs and generated artifacts.
+# These datasets are large and must not be committed to Git.
+S12_Sandwich_Video/
+annotations/
+vocabulary/
+work/
+results/
+*.avi
+
+# Local credentials are never source-controlled. OpenAI credentials belong in
+# the Modal Secret named "tubelet-openai".
+.env
+.env.*
