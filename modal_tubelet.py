@@ -154,7 +154,7 @@ def _run_name(value: str) -> str:
 
 @app.function(
     image=tubelet_image,
-    gpu=["A100-80GB", "H100", "H200"],
+    gpu="A100-80GB",
     cpu=8.0,
     memory=32768,
     timeout=12 * 60 * 60,
@@ -277,7 +277,9 @@ def run_tubelet(
                 )
 
         first_frame = Image.open(frame_paths[0])
-        mask = np.asarray(Image.open(input_mask))
+        with Image.open(input_mask) as mask_image:
+            mask_source_mode = mask_image.mode
+            mask = np.asarray(mask_image)
         if mask.ndim != 2:
             raise ValueError(f"Mask must be single channel; shape is {mask.shape}")
         if mask.shape != (first_frame.height, first_frame.width):
@@ -301,7 +303,23 @@ def run_tubelet(
         local_mask = local_input_root / f"{logical_video_id}_0000000.png"
         local_input_root.mkdir(parents=True, exist_ok=True)
         shutil.copytree(input_frames, local_frames)
-        shutil.copy2(input_mask, local_mask)
+        # TubeletGraph's loader requires an indexed PNG. Preserve the numeric
+        # object IDs while normalizing legacy grayscale masks to palette mode.
+        mask_uint8 = np.ascontiguousarray(mask, dtype=np.uint8)
+        indexed_mask = Image.frombytes(
+            "P",
+            (mask_uint8.shape[1], mask_uint8.shape[0]),
+            mask_uint8.tobytes(),
+        )
+        indexed_mask.putpalette(
+            [channel for index in range(256) for channel in (index, index, index)]
+        )
+        indexed_mask.save(local_mask, "PNG")
+        with Image.open(local_mask) as normalized_mask:
+            if normalized_mask.mode != "P":
+                raise RuntimeError(
+                    f"Normalized mask must be indexed PNG; found {normalized_mask.mode}"
+                )
 
         command = [
             "python",
@@ -316,6 +334,8 @@ def run_tubelet(
         manifest["input_frame_count"] = len(frame_paths)
         manifest["input_dimensions"] = [first_frame.width, first_frame.height]
         manifest["mask_values"] = mask_values
+        manifest["mask_source_mode"] = mask_source_mode
+        manifest["mask_runtime_mode"] = "P"
         manifest["command"] = command
         manifest["status"] = "running"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image
 
 
 WINDOW = "Mask: click | n next polygon | ENTER save | u undo | r reset | q quit"
@@ -40,8 +41,15 @@ def save_mask(
     mask = np.zeros(image_shape, dtype=np.uint8)
     cv2.fillPoly(mask, polygons, object_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(out_path), mask):
-        raise RuntimeError(f"Unable to write {out_path}")
+    # TubeletGraph expects indexed PNG annotations and treats pixel indices as
+    # object IDs, so preserve those indices in palette (P) mode.
+    indexed_mask = Image.frombytes(
+        "P", (mask.shape[1], mask.shape[0]), mask.tobytes()
+    )
+    indexed_mask.putpalette(
+        [channel for index in range(256) for channel in (index, index, index)]
+    )
+    indexed_mask.save(out_path, "PNG")
     print(f"Saved {out_path}")
     print(f"Shape: {mask.shape}; values: {np.unique(mask).tolist()}")
     print(f"Object pixels: {int(np.count_nonzero(mask == object_id))}")

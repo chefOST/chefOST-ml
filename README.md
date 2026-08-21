@@ -63,9 +63,11 @@ python3 scripts/make_mask.py \
   --out work/S12_Sandwich_7150991-2470/mask.png
 ```
 
-The result must be an 800 x 600 single-channel PNG containing only values 0
-and 1. Visually inspect it before spending GPU time. To redraw it interactively,
-omit `--polygons-json`; press `n` to close one polygon and begin another.
+The result must be an 800 x 600 indexed-palette PNG containing only values 0
+and 1. The Modal runner also normalizes legacy grayscale masks to indexed mode
+without changing their object IDs. Visually inspect the mask before spending GPU
+time. To redraw it interactively, omit `--polygons-json`; press `n` to close one
+polygon and begin another.
 
 ## Modal, OpenAI, and W&B environments
 
@@ -130,8 +132,7 @@ modal run modal_tubelet.py \
 
 The runner verifies CUDA, mask shape/values, and contiguous frame names before
 starting. The image pins TubeletGraph commit
-`fdb05b6fbd7f4644aea990bf967cc18d82bf291b` and requests Modal's ordered
-80 GB-class GPU fallbacks: A100-80GB, H100, then H200. It
+`fdb05b6fbd7f4644aea990bf967cc18d82bf291b` and uses an A100 80 GB GPU. It
 persists predictions, raw VLM responses, mapped event JSON, visualizations, a
 run log, and a manifest beneath:
 
