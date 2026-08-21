@@ -115,6 +115,43 @@ Use `modal volume ls tubelet-data` to find the run and `modal volume get` to
 download it. Do not calculate MOSCATO metrics before visually validating that
 the tracked mask stays on the bread.
 
+## Convert and evaluate a validated run
+
+After downloading a run, locate the VLM-enriched prediction JSON under its
+`predictions/` tree. Build a draft that preserves every raw TubeletGraph node:
+
+```bash
+python3 scripts/build_event_draft.py \
+  --prediction <run>/predictions/custom-S12_Sandwich_7150991-2470-Ours_gpt-4.1/S12_Sandwich_7150991-2470_1.json \
+  --out work/S12_Sandwich_7150991-2470/tubelet_events.draft.json
+```
+
+The draft deliberately contains null state fields. Run the fixed closed-list
+adapter with the OpenAI key supplied as a runtime environment variable (or run
+this command inside Modal with the same secret):
+
+```bash
+python3 scripts/map_event_states.py \
+  --draft work/S12_Sandwich_7150991-2470/tubelet_events.draft.json \
+  --state-dict vocabulary/CMU/state_dict.json \
+  --frames work/S12_Sandwich_7150991-2470/frames \
+  --out work/S12_Sandwich_7150991-2470/tubelet_events.json
+```
+
+The adapter sees the frame, TubeletGraph text, and the allowed state names. It
+does not load `gt_annotations_cmu.json`. Its raw responses and mapped labels
+remain in the output for audit.
+
+Evaluate only after inspecting those mappings:
+
+```bash
+python3 scripts/evaluate.py \
+  --annotations annotations/ground_truth/CMU/gt_annotations_cmu.json \
+  --state-dict vocabulary/CMU/state_dict.json \
+  --events work/S12_Sandwich_7150991-2470/tubelet_events.json \
+  --out-csv results/S12_Sandwich_7150991-2470/bread_slices.csv
+```
+
 ## Evaluation policy
 
 The scripts in this branch use these fixed rules:
