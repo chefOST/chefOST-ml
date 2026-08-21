@@ -76,10 +76,7 @@ tubelet_image = (
     )
     .env(
         {
-            "CC": "gcc",
-            "CXX": "g++",
             "FORCE_CUDA": "1",
-            "MAX_JOBS": "8",
             "TORCH_CUDA_ARCH_LIST": "8.0",
             "PYTHONUNBUFFERED": "1",
         }
@@ -104,17 +101,19 @@ tubelet_image = (
         "cd /opt/TubeletGraph/thirdparty/sam2 && "
         'python -m pip install -e ".[notebooks]"',
         "cd /opt/TubeletGraph/thirdparty/sam2 && "
-        "python setup.py build_ext --inplace",
+        "CC=gcc CXX=g++ MAX_JOBS=8 python setup.py build_ext --inplace",
         "cd /opt/TubeletGraph/thirdparty && "
         "git clone https://github.com/facebookresearch/detectron2.git",
         f"cd /opt/TubeletGraph/thirdparty/detectron2 && "
         f"git checkout {DETECTRON2_COMMIT}",
         "cd /opt/TubeletGraph/thirdparty && "
+        "CC=gcc CXX=g++ MAX_JOBS=8 "
         "python -m pip install -e detectron2 --no-build-isolation",
         "ln -s /opt/TubeletGraph/thirdparty/Entity/Entityv2/CropFormer "
         "/opt/TubeletGraph/thirdparty/detectron2/projects/CropFormer",
         "cd /opt/TubeletGraph/thirdparty/detectron2/projects/"
-        "CropFormer/mask2former/modeling/pixel_decoder/ops && bash make.sh",
+        "CropFormer/mask2former/modeling/pixel_decoder/ops && "
+        "CC=gcc CXX=g++ MAX_JOBS=8 bash make.sh",
         "cd /opt/TubeletGraph/thirdparty/fc-clip && "
         "python -m pip install -r requirements.txt",
     )
@@ -158,7 +157,6 @@ def _run_name(value: str) -> str:
     gpu="A100-80GB",
     cpu=8.0,
     memory=32768,
-    ephemeral_disk=100 * 1024,
     timeout=12 * 60 * 60,
     volumes={"/data": data_volume},
     secrets=[openai_secret],
