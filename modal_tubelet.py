@@ -5,6 +5,7 @@ One-time local setup:
     modal setup
     modal volume create tubelet-data
     modal secret create tubelet-openai OPENAI_API_KEY="$OPENAI_API_KEY"
+    modal secret create wandb WANDB_API_KEY="$WANDB_API_KEY"
 
 Smoke test the official bundled example first:
     modal run modal_tubelet.py --smoke-test
@@ -15,6 +16,10 @@ Run the prepared S12 clip:
         --fps 30 \
         --clip-start-global 2824 \
         --object-name "bread slices"
+
+After visual validation, evaluate and publish to W&B:
+    modal run modal_tubelet.py \
+        --evaluate-run-name <completed-run-name>
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ import modal
 APP_NAME = "tubeletgraph-moscato-cmu"
 VOLUME_NAME = "tubelet-data"
 SECRET_NAME = "tubelet-openai"
+WANDB_SECRET_NAME = "wandb"
+DEFAULT_WANDB_PROJECT = "chefost-tubeletgraph-moscato"
 TUBELETGRAPH_REPOSITORY = "https://github.com/YihongSun/TubeletGraph.git"
 TUBELETGRAPH_COMMIT = "fdb05b6fbd7f4644aea990bf967cc18d82bf291b"
 DETECTRON2_COMMIT = "a2f4a8771ab77e8411c26b27f24f9489a28a2453"
@@ -43,6 +50,9 @@ app = modal.App(APP_NAME)
 data_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 openai_secret = modal.Secret.from_name(
     SECRET_NAME, required_keys=["OPENAI_API_KEY"]
+)
+wandb_secret = modal.Secret.from_name(
+    WANDB_SECRET_NAME, required_keys=["WANDB_API_KEY"]
 )
 
 
@@ -66,7 +76,10 @@ tubelet_image = (
     )
     .env(
         {
+            "CC": "gcc",
+            "CXX": "g++",
             "FORCE_CUDA": "1",
+            "MAX_JOBS": "8",
             "TORCH_CUDA_ARCH_LIST": "8.0",
             "PYTHONUNBUFFERED": "1",
         }
@@ -83,8 +96,9 @@ tubelet_image = (
         "cd /opt/TubeletGraph && "
         "grep -v '^mmcv==' requirements.txt > /tmp/tubelet-requirements.txt && "
         "python -m pip install -r /tmp/tubelet-requirements.txt",
-        "cd /opt/TubeletGraph && "
-        "python -m pip install mmcv==2.2.0 --no-build-isolation",
+        # TubeletGraph does not import mmcv.ops; use OpenMMLab's official
+        # non-op distribution and avoid compiling optional CUDA extensions.
+        "python -m pip install mmcv-lite==2.2.0",
         "cd /opt/TubeletGraph && bash thirdparty/setup_ckpts.sh",
         "cd /opt/TubeletGraph/thirdparty/sam2 && python -m pip install -e .",
         "cd /opt/TubeletGraph/thirdparty/sam2 && "
@@ -103,6 +117,20 @@ tubelet_image = (
         "CropFormer/mask2former/modeling/pixel_decoder/ops && bash make.sh",
         "cd /opt/TubeletGraph/thirdparty/fc-clip && "
         "python -m pip install -r requirements.txt",
+    )
+    .add_local_dir(
+        "scripts",
+        "/opt/moscato/scripts",
+        copy=True,
+        ignore=["**/__pycache__/**", "**/*.pyc"],
+    )
+)
+
+evaluation_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "scikit-learn>=1.7,<2",
+        "wandb==0.28.2",
     )
     .add_local_dir(
         "scripts",
@@ -401,6 +429,132 @@ def run_tubelet(
     }
 
 
+@app.function(
+    image=evaluation_image,
+    cpu=2.0,
+    memory=4096,
+    timeout=20 * 60,
+    volumes={"/data": data_volume},
+    secrets=[wandb_secret],
+    single_use_containers=True,
+)
+def evaluate_and_log(
+    video_id: str,
+    object_name: str,
+    run_name: str,
+    wandb_project: str,
+    wandb_entity: str = "",
+) -> dict:
+    """Evaluate an isolated completed run, then publish metrics to W&B."""
+    import hashlib
+    import json
+    from pathlib import Path
+    import sys
+
+    video_id = _safe_component(video_id, "video_id")
+    run_name = _safe_component(run_name, "evaluate_run_name")
+    wandb_project = _safe_component(wandb_project, "wandb_project")
+    if wandb_entity:
+        wandb_entity = _safe_component(wandb_entity, "wandb_entity")
+
+    input_root = Path("/data") / video_id
+    run_dir = input_root / "runs" / run_name
+    annotations_path = input_root / "ground_truth.json"
+    state_dict_path = input_root / "state_dict.json"
+    events_path = run_dir / "tubelet_events.json"
+    manifest_path = run_dir / "run_manifest.json"
+    required = [annotations_path, state_dict_path, events_path, manifest_path]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Required evaluation files are missing: {missing}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("status") != "succeeded":
+        raise RuntimeError(
+            f"Refusing to evaluate run with status {manifest.get('status')!r}"
+        )
+
+    sys.path.insert(0, "/opt/moscato")
+    from scripts.evaluate import evaluate_events, load_json, write_csv
+    from scripts.log_wandb import log_evaluation
+
+    rows, summary = evaluate_events(
+        load_json(annotations_path),
+        load_json(state_dict_path),
+        load_json(events_path),
+    )
+    if summary["object"] != object_name:
+        raise ValueError(
+            f"Event object {summary['object']!r} does not match {object_name!r}"
+        )
+
+    def sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    evaluation_dir = run_dir / "evaluation"
+    evaluation_dir.mkdir(exist_ok=True)
+    csv_path = evaluation_dir / "frame_predictions.csv"
+    summary_path = evaluation_dir / "summary.json"
+    wandb_result_path = evaluation_dir / "wandb.json"
+    write_csv(csv_path, rows)
+    summary.update(
+        {
+            "run_name": run_name,
+            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "provenance": {
+                "annotations_sha256": sha256(annotations_path),
+                "state_dict_sha256": sha256(state_dict_path),
+                "events_sha256": sha256(events_path),
+                "ground_truth_used_for_inference": False,
+            },
+        }
+    )
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+    try:
+        wandb_result = log_evaluation(
+            summary=summary,
+            rows=rows,
+            project=wandb_project,
+            entity=wandb_entity,
+            run_name=f"{video_id}-{object_name}-{run_name}",
+            artifact_paths={
+                "evaluation": csv_path,
+                "summary": summary_path,
+                "events": events_path,
+                "manifest": manifest_path,
+            },
+            config={
+                "video_id": video_id,
+                "object": object_name,
+                "run_name": run_name,
+                "tubeletgraph_commit": TUBELETGRAPH_COMMIT,
+                "detectron2_commit": DETECTRON2_COMMIT,
+                "ground_truth_used_for_inference": False,
+                "metric_policy": summary["policy"],
+            },
+        )
+        wandb_result_path.write_text(
+            json.dumps(wandb_result, indent=2) + "\n", encoding="utf-8"
+        )
+    finally:
+        data_volume.commit()
+
+    return {
+        "status": "succeeded",
+        "metrics": {
+            key: summary[key]
+            for key in ("precision", "accuracy", "f1", "f1_max")
+        },
+        "summary": str(summary_path),
+        "wandb": wandb_result,
+    }
+
+
 @app.local_entrypoint()
 def main(
     video_id: str = DEFAULT_VIDEO_ID,
@@ -412,8 +566,26 @@ def main(
     run_name: str = "",
     smoke_test: bool = False,
     persist_intermediates: bool = False,
+    evaluate_run_name: str = "",
+    wandb_project: str = DEFAULT_WANDB_PROJECT,
+    wandb_entity: str = "",
 ) -> None:
     import json
+
+    if evaluate_run_name:
+        if smoke_test or run_name:
+            raise ValueError(
+                "--evaluate-run-name cannot be combined with --smoke-test or --run-name"
+            )
+        result = evaluate_and_log.remote(
+            video_id=video_id,
+            object_name=object_name,
+            run_name=evaluate_run_name,
+            wandb_project=wandb_project,
+            wandb_entity=wandb_entity,
+        )
+        print(json.dumps(result, indent=2))
+        return
 
     result = run_tubelet.remote(
         video_id=video_id,

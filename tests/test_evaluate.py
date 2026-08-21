@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.evaluate import densify, evaluate_events, normalize_state
+from scripts.evaluate import (
+    densify,
+    evaluate_events,
+    f1_threshold_curve,
+    normalize_state,
+)
 
 
 class EvaluateTests(unittest.TestCase):
@@ -58,6 +63,22 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(summary["evaluated_frames"], 3)
         self.assertEqual(summary["correct_frames"], 2)
         self.assertAlmostEqual(summary["frame_hit_accuracy"], 2 / 3)
+        self.assertAlmostEqual(summary["accuracy"], 2 / 3)
+        self.assertEqual(summary["precision"], summary["micro_precision"])
+        self.assertEqual(summary["f1"], summary["micro_f1"])
+        self.assertEqual(summary["f1_max"], summary["micro_f1"])
+        self.assertEqual(summary["f1_max_threshold"], 0.1)
+        self.assertEqual(len(summary["f1_threshold_curve"]), 9)
+
+    def test_f1_max_uses_best_global_threshold(self) -> None:
+        curve, best = f1_threshold_curve(
+            [[1, 0], [0, 1]],
+            [[0.8, 0.2], [0.4, 0.6]],
+            thresholds=(0.3, 0.5, 0.7),
+        )
+        self.assertEqual(len(curve), 3)
+        self.assertEqual(best["threshold"], 0.5)
+        self.assertEqual(best["f1"], 1.0)
 
 
 if __name__ == "__main__":

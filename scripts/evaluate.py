@@ -12,6 +12,9 @@ from typing import Any
 from sklearn.metrics import precision_recall_fscore_support
 
 
+F1_MAX_THRESHOLDS = tuple(round(index / 10, 1) for index in range(1, 10))
+
+
 def load_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -63,6 +66,42 @@ def densify(events: dict[str, Any], state_dict: dict[str, Any]) -> list[str]:
     if len(dense) != frame_count:
         raise AssertionError("Densification produced the wrong number of frames")
     return dense
+
+
+def f1_threshold_curve(
+    y_true: list[list[int]],
+    y_score: list[list[float]],
+    thresholds: tuple[float, ...] = F1_MAX_THRESHOLDS,
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    """Return MOSCATO's global-threshold micro-F1 sweep and its maximum."""
+    if not y_true or len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must contain the same non-zero frames")
+    if not thresholds:
+        raise ValueError("At least one F1-max threshold is required")
+
+    curve: list[dict[str, float]] = []
+    for threshold in thresholds:
+        thresholded = [
+            [int(score >= threshold) for score in frame_scores]
+            for frame_scores in y_score
+        ]
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true,
+            thresholded,
+            average="micro",
+            zero_division=0,
+        )
+        curve.append(
+            {
+                "threshold": float(threshold),
+                "precision": float(precision),
+                "recall": float(recall),
+                "f1": float(f1),
+            }
+        )
+
+    best = max(curve, key=lambda point: (point["f1"], -point["threshold"]))
+    return curve, best
 
 
 def evaluate_events(
@@ -146,6 +185,14 @@ def evaluate_events(
     p_macro, r_macro, f1_macro, _ = precision_recall_fscore_support(
         y_true, y_pred, average="macro", zero_division=0
     )
+    # The adapter emits one hard canonical state, not calibrated probabilities.
+    # Treat its one-hot labels as scores so the benchmark's official global
+    # threshold sweep remains reproducible and its limitation stays explicit.
+    f1_curve, f1_best = f1_threshold_curve(
+        y_true,
+        [[float(value) for value in frame] for frame in y_pred],
+    )
+    accuracy = hits / evaluated
     summary = {
         "video_id": video_id,
         "object": object_name,
@@ -154,17 +201,27 @@ def evaluate_events(
         "evaluated_frames": evaluated,
         "skipped_empty_gt_frames": len(predictions) - evaluated,
         "correct_frames": hits,
-        "frame_hit_accuracy": hits / evaluated,
+        "precision": float(p_micro),
+        "accuracy": accuracy,
+        "f1": float(f1_micro),
+        "f1_max": f1_best["f1"],
+        "f1_max_threshold": f1_best["threshold"],
+        "frame_hit_accuracy": accuracy,
         "micro_precision": float(p_micro),
         "micro_recall": float(r_micro),
         "micro_f1": float(f1_micro),
         "macro_precision": float(p_macro),
         "macro_recall": float(r_macro),
         "macro_f1": float(f1_macro),
+        "f1_threshold_curve": f1_curve,
         "policy": {
+            "primary_metric_namespace": "word_accuracy",
+            "word_unit": "exact canonical MOSCATO state label per frame",
             "multi_label": "prediction is correct if present in GT state list",
             "empty_gt": "skip",
             "temporal": "initial propagation plus transition forward fill",
+            "f1_max": "maximum micro-F1 at one global threshold in [0.1, ..., 0.9]",
+            "prediction_scores": "hard one-hot labels; no calibrated confidence available",
         },
     }
     return rows, summary

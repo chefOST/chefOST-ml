@@ -14,7 +14,7 @@ work/
 results/
 *.avi
 
-# Local credentials are never source-controlled. OpenAI credentials belong in
-# the Modal Secret named "tubelet-openai".
+# Local credentials are never source-controlled. Runtime credentials belong in
+# the Modal Secrets named "tubelet-openai" and "wandb".
 .env
 .env.*

@@ -67,7 +67,7 @@ The result must be an 800 x 600 single-channel PNG containing only values 0
 and 1. Visually inspect it before spending GPU time. To redraw it interactively,
 omit `--polygons-json`; press `n` to close one polygon and begin another.
 
-## Modal and the OpenAI key
+## Modal, OpenAI, and W&B environments
 
 TubeletGraph is installed and run only in the CUDA Modal image defined by
 `modal_tubelet.py`. The key is never placed in a file or image layer.
@@ -79,7 +79,13 @@ python3 -m pip install modal
 modal setup
 modal volume create tubelet-data
 modal secret create tubelet-openai OPENAI_API_KEY="$OPENAI_API_KEY"
+modal secret create wandb WANDB_API_KEY="$WANDB_API_KEY"
 ```
+
+The local Python environment is `.venv/`. Runtime credentials are separate
+Modal environments: `tubelet-openai` injects `OPENAI_API_KEY` only into the GPU
+inference function, while `wandb` injects `WANDB_API_KEY` only into the CPU
+evaluation function. Neither key is copied into an image or committed to Git.
 
 Upload the prepared frames and mask:
 
@@ -98,7 +104,15 @@ modal volume put \
   tubelet-data \
   vocabulary/CMU/state_dict.json \
   /S12_Sandwich_7150991-2470/state_dict.json
+
+modal volume put \
+  tubelet-data \
+  annotations/ground_truth/CMU/gt_annotations_cmu.json \
+  /S12_Sandwich_7150991-2470/ground_truth.json
 ```
+
+The ground truth is mounted only by the separate evaluation function. The GPU
+inference function never reads it.
 
 First run TubeletGraph's bundled example after the secret exists:
 
@@ -170,6 +184,20 @@ python3 scripts/evaluate.py \
   --out-csv results/S12_Sandwich_7150991-2470/bread_slices.csv
 ```
 
+For a completed Modal run, calculate the same metrics and publish the final
+results, threshold curve, per-frame table, and reproducibility artifact to W&B:
+
+```bash
+modal run modal_tubelet.py \
+  --evaluate-run-name <validated-run-name> \
+  --wandb-project chefost-tubeletgraph-moscato
+```
+
+Add `--wandb-entity <team-or-user>` only when the run should be sent to a
+specific W&B entity. The command prints the final four scores and W&B run URL,
+and saves the evaluation beneath the completed run's `evaluation/` directory
+on the `tubelet-data` Volume.
+
 ## Evaluation policy
 
 The scripts in this branch use these fixed rules:
@@ -182,6 +210,13 @@ The scripts in this branch use these fixed rules:
 - Frames whose MOSCATO state list is empty are excluded from adjective metrics.
 - TubeletGraph/VLM text must be mapped to the checked-in MOSCATO vocabulary
   without consulting the ground-truth timeline.
+- `word_accuracy/accuracy` is exact per-frame state-label hit accuracy.
+- `word_accuracy/precision` and `word_accuracy/f1` are micro-averaged over the
+  canonical MOSCATO state vocabulary.
+- `word_accuracy/f1_max` is the best micro-F1 from global thresholds 0.1 through
+  0.9. The current adapter emits one hard state rather than calibrated scores,
+  so its one-hot score sweep is reported explicitly and F1-max will ordinarily
+  match micro-F1.
 
 The original detailed setup notes are retained in
 `tubeletgraph_moscato_cmu_setup.md` as local source material.
