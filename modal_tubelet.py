@@ -78,7 +78,13 @@ tubelet_image = (
         "cd /opt/TubeletGraph && python -m pip install "
         "torch==2.7.0 torchvision==0.22.0 "
         "--index-url https://download.pytorch.org/whl/cu126",
-        "cd /opt/TubeletGraph && python -m pip install -r requirements.txt",
+        "python -m pip install --upgrade "
+        "pip==25.3 setuptools==80.9.0 wheel",
+        "cd /opt/TubeletGraph && "
+        "grep -v '^mmcv==' requirements.txt > /tmp/tubelet-requirements.txt && "
+        "python -m pip install -r /tmp/tubelet-requirements.txt",
+        "cd /opt/TubeletGraph && "
+        "python -m pip install mmcv==2.2.0 --no-build-isolation",
         "cd /opt/TubeletGraph && bash thirdparty/setup_ckpts.sh",
         "cd /opt/TubeletGraph/thirdparty/sam2 && python -m pip install -e .",
         "cd /opt/TubeletGraph/thirdparty/sam2 && "
