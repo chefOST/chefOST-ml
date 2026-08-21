@@ -154,7 +154,7 @@ def _run_name(value: str) -> str:
 
 @app.function(
     image=tubelet_image,
-    gpu="A100-80GB",
+    gpu=["A100-80GB", "H100", "H200"],
     cpu=8.0,
     memory=32768,
     timeout=12 * 60 * 60,

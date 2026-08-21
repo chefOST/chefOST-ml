@@ -130,7 +130,8 @@ modal run modal_tubelet.py \
 
 The runner verifies CUDA, mask shape/values, and contiguous frame names before
 starting. The image pins TubeletGraph commit
-`fdb05b6fbd7f4644aea990bf967cc18d82bf291b` and uses an A100 80 GB GPU. It
+`fdb05b6fbd7f4644aea990bf967cc18d82bf291b` and requests Modal's ordered
+80 GB-class GPU fallbacks: A100-80GB, H100, then H200. It
 persists predictions, raw VLM responses, mapped event JSON, visualizations, a
 run log, and a manifest beneath:
 
