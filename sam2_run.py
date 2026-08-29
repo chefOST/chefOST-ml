@@ -1,10 +1,11 @@
 """
-chefOST - run SAM2 over every VISOR subsequence and log each to Weights & Biases.
+chefOST - run SAM2 over selected FOOD-object VISOR subsequences and log each
+to Weights & Biases.
 
 What it does:
   * Reads the DAVIS-format clips from the 'visor-data' volume.
-  * For each P01_107_seq_* subsequence: prompts SAM2 with the frame-0 ground-truth
-    mask of its first object, then propagates through the clip.
+  * For each subsequence in FOOD_TARGETS: prompts SAM2 with the frame-0
+    ground-truth mask of its named food object, then propagates through the clip.
   * Logs each frame + predicted-mask overlay to W&B as ONE run per sequence
     (name = m1_sam2_<seq>).
   * Scores predictions vs ground truth (IoU) on every annotated later frame, logs
@@ -63,9 +64,11 @@ def run():
     cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
     predictor = build_sam2_video_predictor(cfg, ckpt)
 
-    def eval_one(seq):
+    def eval_one(seq, target, target_name):
         """Run + score one sequence into the currently-active W&B run.
 
+        `target` is the DAVIS mask value to track; `target_name` the VISOR
+        object name it corresponds to (for labels/logs).
         Returns the sequence mean IoU, or None if it has nothing to score.
         """
         frames_dir = f"{JPEG_ROOT}/{seq}"
@@ -78,11 +81,12 @@ def run():
             return None
         gt0 = np.array(Image.open(annot_files[0]))
         object_values = [int(v) for v in np.unique(gt0) if v != 0]
-        if not object_values:
-            print(f"[{seq}] frame 0 has no objects, skipping.")
+        if target not in object_values:
+            print(f"[{seq}] value {target} ({target_name}) not in frame 0 "
+                  f"objects {object_values}, skipping.")
             return None
-        target = object_values[0]      # track the first object in frame 0
-        print(f"[{seq}] objects in frame 0: {object_values} -> tracking value {target}")
+        print(f"[{seq}] objects in frame 0: {object_values} -> tracking "
+              f"value {target} ({target_name})")
         prompt_mask = (gt0 == target)
 
         # all available ground-truth masks for this object, keyed by frame name
@@ -125,7 +129,7 @@ def run():
                         (img.shape[1], img.shape[0]), Image.NEAREST))
 
                 wb_img = wandb.Image(img, masks={
-                    "prediction": {"mask_data": pred, "class_labels": {1: f"obj_{target}"}}
+                    "prediction": {"mask_data": pred, "class_labels": {1: target_name}}
                 })
 
                 iou = None
@@ -157,17 +161,28 @@ def run():
             print(f"[{seq}] no scoreable later frames (object left view / no overlap).")
         return mean_iou
 
-    # --- loop over every subsequence; one W&B run each ---
-    sequences = sorted(os.listdir(JPEG_ROOT))
-    print(f"Found {len(sequences)} sequences to evaluate.")
+    # --- run only subsequences whose tracked object is actual FOOD ---
+    # DAVIS mask values were matched to VISOR object names by rasterizing the
+    # P01_107.json polygons and overlapping them with the frame-0 PNGs
+    # (IoU > 0.94 for every match). P01_107 is a breakfast clip; the only
+    # food objects are bread and cereal.
+    FOOD_TARGETS = {
+        "P01_107_seq_00007": (1, "bread"),
+        "P01_107_seq_00010": (1, "cereal"),
+    }
+    sequences = sorted(FOOD_TARGETS)
+    print(f"Running {len(sequences)} food-object sequences: {sequences}")
 
     results = {}
     for seq in sequences:
+        target, target_name = FOOD_TARGETS[seq]
         wandb.init(entity="chefOST", project="justin_runs", name=f"m1_sam2_{seq}",
-                   group="sam2_vlm_llava_next", tags=["sam2", "sam2.1_hiera_large"],
-                   config={"tracker": "sam2.1_hiera_large", "seq": seq}, reinit=True)
+                   group="sam2_vlm_llava_next", tags=["sam2", "sam2.1_hiera_large", "food"],
+                   config={"tracker": "sam2.1_hiera_large", "seq": seq,
+                           "target_value": target, "target_object": target_name},
+                   reinit=True)
         try:
-            results[seq] = eval_one(seq)
+            results[seq] = eval_one(seq, target, target_name)
         except Exception as e:
             print(f"[{seq}] FAILED: {e}")
             results[seq] = None

@@ -133,7 +133,11 @@ def run():
         # keep only the assistant turn (after the final instruction marker)
         return text.split("[/INST]")[-1].strip()
 
-    sequences = sorted(os.listdir(CROPS_ROOT))
+    # Only the food-object subsequences from the latest SAM2 run (bread,
+    # cereal) - the volume still holds stale crop dirs from earlier
+    # every-sequence runs, which we skip.
+    FOOD_SEQS = {"P01_107_seq_00007", "P01_107_seq_00010"}
+    sequences = sorted(s for s in os.listdir(CROPS_ROOT) if s in FOOD_SEQS)
     # LIMIT=1 (env var) processes just the first sequence - cheap smoke test
     limit = os.environ.get("LIMIT")
     if limit:
@@ -147,7 +151,7 @@ def run():
 
         wandb.init(entity="chefOST", project="justin_runs",
                    name=f"vlm_state_{seq}", group="sam2_vlm_llava_next",
-                   job_type="vlm_state", tags=["vlm", "llava-next"],
+                   job_type="vlm_state", tags=["vlm", "llava-next", "food"],
                    config={"model": MODEL_ID, "seq": seq}, reinit=True)
         table = wandb.Table(columns=[
             "frame_idx", "frame_name", "crop",
