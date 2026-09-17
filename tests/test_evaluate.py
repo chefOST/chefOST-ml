@@ -80,6 +80,26 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(best["threshold"], 0.5)
         self.assertEqual(best["f1"], 1.0)
 
+    def test_missing_prediction_is_scored_as_abstention(self) -> None:
+        annotations = {
+            "video": {
+                "state": {"bread": [["on dish"], ["on dish"]]},
+            }
+        }
+        events = {
+            "video_id": "video",
+            "object": "bread",
+            "clip_start_global": 0,
+            "num_local_frames": 2,
+            "initial_state": None,
+            "transitions": [],
+        }
+        rows, summary = evaluate_events(annotations, self.state_dict, events)
+        self.assertEqual([row["prediction"] for row in rows], ["__abstain__"] * 2)
+        self.assertEqual(summary["abstained_frames"], 2)
+        self.assertEqual(summary["coverage"], 0.0)
+        self.assertEqual(summary["accuracy"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

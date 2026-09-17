@@ -26,6 +26,8 @@ class WandbLoggingTests(unittest.TestCase):
                 "word_accuracy/f1_max",
                 "word_accuracy/f1_max_threshold",
                 "word_accuracy/evaluated_frames",
+                "word_accuracy/coverage",
+                "word_accuracy/abstained_frames",
             },
         )
 

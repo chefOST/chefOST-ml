@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from scripts.build_event_draft import build_draft
-from scripts.map_event_states import normalize_candidate
+from scripts.map_event_states import (
+    canonical_states,
+    map_events,
+    normalize_candidate,
+    semantic_evidence,
+)
 
 
 class EventPipelineTests(unittest.TestCase):
@@ -62,6 +67,63 @@ class EventPipelineTests(unittest.TestCase):
         self.assertEqual(
             normalize_candidate('{"state": "on dish"}', state_dict, ["on dish"]),
             "on dish",
+        )
+
+    def test_object_candidates_are_validated_and_normalized(self) -> None:
+        state_dict = {
+            "s2i": {"on dish": 0, "placed": 1, "unrelated": 2},
+            "all2one": {},
+        }
+        self.assertEqual(
+            canonical_states(state_dict, ["Placed", "on dish"]),
+            ["on dish", "placed"],
+        )
+        with self.assertRaises(ValueError):
+            canonical_states(state_dict, ["invented"])
+
+    def test_missing_tubelet_text_abstains_without_model_call(self) -> None:
+        class RefusingClient:
+            @property
+            def chat(self):
+                raise AssertionError("Model must not be called without semantic text")
+
+        draft = {
+            "object": "bread slices",
+            "num_local_frames": 3,
+            "initial_raw": {"description": None},
+            "transitions": [],
+            "provenance": {},
+        }
+        state_dict = {"s2i": {"on dish": 0}, "all2one": {}, "one2all": {}}
+        mapped = map_events(
+            draft,
+            state_dict,
+            RefusingClient(),
+            "unused",
+            allowed_states=["on dish"],
+        )
+        self.assertIsNone(mapped["initial_state"])
+        self.assertEqual(
+            mapped["initial_mapping"]["status"],
+            "abstained_no_tubelet_text",
+        )
+        self.assertEqual(
+            mapped["provenance"]["state_mapping_status"],
+            "abstained_no_tubelet_text",
+        )
+        self.assertFalse(mapped["provenance"]["video_frames_used_for_mapping"])
+
+    def test_semantic_evidence_ignores_nonsemantic_metadata(self) -> None:
+        self.assertEqual(
+            semantic_evidence(
+                {
+                    "tubelet_object_id": "2",
+                    "raw_nodes": [
+                        {"description": "bread on a plate", "analysis_frame_idx": 4}
+                    ],
+                }
+            ),
+            ["bread on a plate"],
         )
 
 

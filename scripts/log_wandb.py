@@ -28,6 +28,10 @@ def metric_payload(summary: dict[str, Any]) -> dict[str, float]:
             "word_accuracy/evaluated_frames": float(
                 summary["evaluated_frames"]
             ),
+            "word_accuracy/coverage": float(summary.get("coverage", 1.0)),
+            "word_accuracy/abstained_frames": float(
+                summary.get("abstained_frames", 0)
+            ),
         }
     )
     return metrics

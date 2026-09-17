@@ -168,13 +168,13 @@ this command inside Modal with the same secret):
 python3 scripts/map_event_states.py \
   --draft work/S12_Sandwich_7150991-2470/tubelet_events.draft.json \
   --state-dict vocabulary/CMU/state_dict.json \
-  --frames work/S12_Sandwich_7150991-2470/frames \
   --out work/S12_Sandwich_7150991-2470/tubelet_events.json
 ```
 
-The adapter sees the frame, TubeletGraph text, and the allowed state names. It
-does not load `gt_annotations_cmu.json`. Its raw responses and mapped labels
-remain in the output for audit.
+The adapter sees only TubeletGraph semantic text and the allowed state names. It
+does not inspect video frames or load `gt_annotations_cmu.json`. Missing semantic
+text becomes an explicit abstention rather than a generated state. Raw responses,
+mapped labels, and abstentions remain in the output for audit.
 
 Evaluate only after inspecting those mappings:
 
@@ -212,6 +212,8 @@ The scripts in this branch use these fixed rules:
 - Frames whose MOSCATO state list is empty are excluded from adjective metrics.
 - TubeletGraph/VLM text must be mapped to the checked-in MOSCATO vocabulary
   without consulting the ground-truth timeline.
+- Frames without TubeletGraph semantic text are abstentions and count as
+  incorrect; coverage and abstained-frame count are reported with the metrics.
 - `word_accuracy/accuracy` is exact per-frame state-label hit accuracy.
 - `word_accuracy/precision` and `word_accuracy/f1` are micro-averaged over the
   canonical MOSCATO state vocabulary.

@@ -40,13 +40,18 @@ def normalize_state(state: str, state_dict: dict[str, Any]) -> str:
     return normalized
 
 
-def densify(events: dict[str, Any], state_dict: dict[str, Any]) -> list[str]:
+def densify(
+    events: dict[str, Any], state_dict: dict[str, Any]
+) -> list[str | None]:
     frame_count = int(events["num_local_frames"])
     if frame_count <= 0:
         raise ValueError("num_local_frames must be positive")
 
-    current_state = normalize_state(events.get("initial_state"), state_dict)
-    dense: list[str] = []
+    initial_state = events.get("initial_state")
+    current_state = (
+        None if initial_state is None else normalize_state(initial_state, state_dict)
+    )
+    dense: list[str | None] = []
     cursor = 0
     previous_transition = -1
     transitions = sorted(
@@ -59,7 +64,12 @@ def densify(events: dict[str, Any], state_dict: dict[str, Any]) -> list[str]:
         if frame == previous_transition:
             raise ValueError(f"Duplicate transition frame: {frame}")
         dense.extend([current_state] * (frame - cursor))
-        current_state = normalize_state(transition.get("state"), state_dict)
+        transition_state = transition.get("state")
+        current_state = (
+            None
+            if transition_state is None
+            else normalize_state(transition_state, state_dict)
+        )
         cursor = frame
         previous_transition = frame
     dense.extend([current_state] * (frame_count - cursor))
@@ -136,6 +146,7 @@ def evaluate_events(
     y_true: list[list[int]] = []
     y_pred: list[list[int]] = []
     hits = 0
+    abstained = 0
 
     for local_frame, prediction in enumerate(predictions):
         global_frame = clip_start + local_frame
@@ -156,20 +167,22 @@ def evaluate_events(
             )
             continue
 
-        correct = prediction in gt_states
+        correct = prediction is not None and prediction in gt_states
         hits += int(correct)
+        abstained += int(prediction is None)
         true_vector = [0] * len(canonical)
         pred_vector = [0] * len(canonical)
         for gt_state in gt_states:
             true_vector[label_to_idx[gt_state]] = 1
-        pred_vector[label_to_idx[prediction]] = 1
+        if prediction is not None:
+            pred_vector[label_to_idx[prediction]] = 1
         y_true.append(true_vector)
         y_pred.append(pred_vector)
         rows.append(
             {
                 "local_frame": local_frame,
                 "global_frame": global_frame,
-                "prediction": prediction,
+                "prediction": prediction if prediction is not None else "__abstain__",
                 "gt_states": "|".join(gt_states),
                 "evaluated": 1,
                 "correct": int(correct),
@@ -201,6 +214,8 @@ def evaluate_events(
         "evaluated_frames": evaluated,
         "skipped_empty_gt_frames": len(predictions) - evaluated,
         "correct_frames": hits,
+        "abstained_frames": abstained,
+        "coverage": (evaluated - abstained) / evaluated,
         "precision": float(p_micro),
         "accuracy": accuracy,
         "f1": float(f1_micro),
@@ -222,6 +237,7 @@ def evaluate_events(
             "temporal": "initial propagation plus transition forward fill",
             "f1_max": "maximum micro-F1 at one global threshold in [0.1, ..., 0.9]",
             "prediction_scores": "hard one-hot labels; no calibrated confidence available",
+            "abstention": "missing TubeletGraph semantic text is scored as an incorrect zero-vector prediction",
         },
     }
     return rows, summary

@@ -123,6 +123,11 @@ tubelet_image = (
         copy=True,
         ignore=["**/__pycache__/**", "**/*.pyc"],
     )
+    .add_local_file(
+        "configs/cmu_object_state_candidates.json",
+        "/opt/moscato/configs/cmu_object_state_candidates.json",
+        copy=True,
+    )
 )
 
 evaluation_image = (
@@ -169,6 +174,7 @@ def run_tubelet(
     object_name: str = DEFAULT_OBJECT,
     object_id: int = DEFAULT_OBJECT_ID,
     expected_frames: int = DEFAULT_EXPECTED_FRAMES,
+    max_frames: int = 0,
     run_name: str = "",
     smoke_test: bool = False,
     persist_intermediates: bool = False,
@@ -192,6 +198,8 @@ def run_tubelet(
         raise RuntimeError("CUDA is unavailable; refusing to run TubeletGraph")
     if fps <= 0:
         raise ValueError("fps must be positive")
+    if max_frames < 0:
+        raise ValueError("max_frames must be non-negative")
 
     video_id = _safe_component(video_id, "video_id")
     resolved_run_name = _run_name(run_name)
@@ -233,6 +241,7 @@ def run_tubelet(
         "target_object": None if smoke_test else object_name,
         "target_object_id": None if smoke_test else int(object_id),
         "expected_local_frames": expected_input_frames,
+        "max_frames": int(max_frames) or None,
         "tubeletgraph_repository": TUBELETGRAPH_REPOSITORY,
         "tubeletgraph_commit": TUBELETGRAPH_COMMIT,
         "detectron2_commit": DETECTRON2_COMMIT,
@@ -275,6 +284,13 @@ def run_tubelet(
                 raise ValueError(
                     f"Frame numbering breaks at {index}: found {frame_path.name}"
                 )
+        source_frame_count = len(frame_paths)
+        if max_frames:
+            if max_frames > source_frame_count:
+                raise ValueError(
+                    f"max_frames={max_frames} exceeds the {source_frame_count} input frames"
+                )
+            frame_paths = frame_paths[:max_frames]
 
         first_frame = Image.open(frame_paths[0])
         with Image.open(input_mask) as mask_image:
@@ -302,7 +318,9 @@ def run_tubelet(
         local_frames = local_input_root / logical_video_id
         local_mask = local_input_root / f"{logical_video_id}_0000000.png"
         local_input_root.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(input_frames, local_frames)
+        local_frames.mkdir(parents=True)
+        for frame_path in frame_paths:
+            shutil.copy2(frame_path, local_frames / frame_path.name)
         # TubeletGraph's loader requires an indexed PNG. Preserve the numeric
         # object IDs while normalizing legacy grayscale masks to palette mode.
         mask_uint8 = np.ascontiguousarray(mask, dtype=np.uint8)
@@ -331,6 +349,7 @@ def run_tubelet(
             "--fps",
             str(fps),
         ]
+        manifest["source_input_frame_count"] = source_frame_count
         manifest["input_frame_count"] = len(frame_paths)
         manifest["input_dimensions"] = [first_frame.width, first_frame.height]
         manifest["mask_values"] = mask_values
@@ -377,6 +396,16 @@ def run_tubelet(
 
             prediction = json.loads(prediction_json.read_text(encoding="utf-8"))
             state_dict = json.loads(state_dict_path.read_text(encoding="utf-8"))
+            candidate_config = json.loads(
+                Path(
+                    "/opt/moscato/configs/cmu_object_state_candidates.json"
+                ).read_text(encoding="utf-8")
+            )
+            state_candidates = (
+                candidate_config.get("videos", {})
+                .get(video_id, {})
+                .get(object_name)
+            )
             event_config = {
                 "video_id": video_id,
                 "target_object": object_name,
@@ -389,14 +418,16 @@ def run_tubelet(
             events = map_events(
                 draft,
                 state_dict,
-                local_frames,
                 OpenAI(),
                 "gpt-4.1",
+                allowed_states=state_candidates,
             )
             events_path = run_dir / "tubelet_events.json"
             events_path.write_text(json.dumps(events, indent=2) + "\n")
             manifest["artifacts"]["event_draft"] = draft_path.name
             manifest["artifacts"]["mapped_events"] = events_path.name
+            manifest["state_candidate_policy"] = candidate_config["policy"]
+            manifest["state_candidates"] = state_candidates
 
         manifest["status"] = "succeeded"
     except Exception as error:  # Persist partial outputs before re-raising.
@@ -581,6 +612,7 @@ def main(
     object_name: str = DEFAULT_OBJECT,
     object_id: int = DEFAULT_OBJECT_ID,
     expected_frames: int = DEFAULT_EXPECTED_FRAMES,
+    max_frames: int = 0,
     run_name: str = "",
     smoke_test: bool = False,
     persist_intermediates: bool = False,
@@ -612,6 +644,7 @@ def main(
         object_name=object_name,
         object_id=object_id,
         expected_frames=expected_frames,
+        max_frames=max_frames,
         run_name=run_name,
         smoke_test=smoke_test,
         persist_intermediates=persist_intermediates,
