@@ -190,7 +190,9 @@ def evaluate_events(
                     "prediction": prediction,
                     "gt_states": "",
                     "evaluated": 0,
-                    "correct": "",
+                    # None keeps the column numeric for wandb.Table; "" mixes
+                    # str with int once any annotated frame has been added.
+                    "correct": None,
                 }
             )
             continue

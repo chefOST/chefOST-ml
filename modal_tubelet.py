@@ -36,7 +36,8 @@ VOLUME_NAME = "tubelet-data"
 GROUND_TRUTH_VOLUME_NAME = "tubelet-ground-truth"
 SECRET_NAME = "tubelet-openai"
 WANDB_SECRET_NAME = "wandb"
-DEFAULT_WANDB_PROJECT = "chefost-tubeletgraph-moscato"
+DEFAULT_WANDB_PROJECT = "tubeletgraph"
+DEFAULT_WANDB_ENTITY = "chefOST"
 TUBELETGRAPH_REPOSITORY = "https://github.com/YihongSun/TubeletGraph.git"
 TUBELETGRAPH_COMMIT = "fdb05b6fbd7f4644aea990bf967cc18d82bf291b"
 DETECTRON2_COMMIT = "a2f4a8771ab77e8411c26b27f24f9489a28a2453"
@@ -670,7 +671,7 @@ def main(
     later_tracking: bool = True,
     evaluate_run_name: str = "",
     wandb_project: str = DEFAULT_WANDB_PROJECT,
-    wandb_entity: str = "",
+    wandb_entity: str = DEFAULT_WANDB_ENTITY,
 ) -> None:
     import json
 
