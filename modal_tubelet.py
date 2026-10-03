@@ -4,6 +4,7 @@ One-time local setup:
     python3 -m pip install modal
     modal setup
     modal volume create tubelet-data
+    modal volume create tubelet-ground-truth
     modal secret create tubelet-openai OPENAI_API_KEY="$OPENAI_API_KEY"
     modal secret create wandb WANDB_API_KEY="$WANDB_API_KEY"
 
@@ -32,6 +33,7 @@ import modal
 
 APP_NAME = "tubeletgraph-moscato-cmu"
 VOLUME_NAME = "tubelet-data"
+GROUND_TRUTH_VOLUME_NAME = "tubelet-ground-truth"
 SECRET_NAME = "tubelet-openai"
 WANDB_SECRET_NAME = "wandb"
 DEFAULT_WANDB_PROJECT = "chefost-tubeletgraph-moscato"
@@ -48,6 +50,9 @@ DEFAULT_EXPECTED_FRAMES = 3890
 
 app = modal.App(APP_NAME)
 data_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+ground_truth_volume = modal.Volume.from_name(
+    GROUND_TRUTH_VOLUME_NAME, create_if_missing=True
+)
 openai_secret = modal.Secret.from_name(
     SECRET_NAME, required_keys=["OPENAI_API_KEY"]
 )
@@ -219,6 +224,7 @@ def run_tubelet(
         input_frames = input_root / "frames"
         input_mask = input_root / "mask.png"
         state_dict_path = input_root / "state_dict.json"
+        legacy_ground_truth_path = input_root / "ground_truth.json"
         run_dir = input_root / "runs" / resolved_run_name
         expected_input_frames = int(expected_frames)
 
@@ -253,6 +259,10 @@ def run_tubelet(
         "torch_cuda": torch.version.cuda,
         "openai_secret_present": True,
         "ground_truth_available_to_gpu_job": False,
+        "ground_truth_volume_mounted": False,
+        "adapter_input_mode": "tubelet_semantic_text_plus_single_event_frame",
+        "adapter_prompt_contains_video_id": False,
+        "adapter_prompt_contains_frame_number": False,
         "artifacts": {},
     }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -266,6 +276,11 @@ def run_tubelet(
         if not smoke_test and (state_dict_path is None or not state_dict_path.is_file()):
             raise FileNotFoundError(
                 f"{state_dict_path} is required for closed-vocabulary state mapping"
+            )
+        if not smoke_test and legacy_ground_truth_path.is_file():
+            raise RuntimeError(
+                "Ground truth is present on the inference Volume. Move it to "
+                f"{GROUND_TRUTH_VOLUME_NAME!r} before running inference."
             )
 
         entries = sorted(path for path in input_frames.iterdir() if path.is_file())
@@ -418,6 +433,7 @@ def run_tubelet(
             events = map_events(
                 draft,
                 state_dict,
+                local_frames,
                 OpenAI(),
                 "gpt-4.1",
                 allowed_states=state_candidates,
@@ -483,7 +499,7 @@ def run_tubelet(
     cpu=2.0,
     memory=4096,
     timeout=20 * 60,
-    volumes={"/data": data_volume},
+    volumes={"/data": data_volume, "/ground-truth": ground_truth_volume},
     secrets=[wandb_secret],
     single_use_containers=True,
 )
@@ -508,7 +524,7 @@ def evaluate_and_log(
 
     input_root = Path("/data") / video_id
     run_dir = input_root / "runs" / run_name
-    annotations_path = input_root / "ground_truth.json"
+    annotations_path = Path("/ground-truth") / video_id / "ground_truth.json"
     state_dict_path = input_root / "state_dict.json"
     events_path = run_dir / "tubelet_events.json"
     manifest_path = run_dir / "run_manifest.json"
@@ -559,6 +575,8 @@ def evaluate_and_log(
                 "state_dict_sha256": sha256(state_dict_path),
                 "events_sha256": sha256(events_path),
                 "ground_truth_used_for_inference": False,
+                "ground_truth_volume": GROUND_TRUTH_VOLUME_NAME,
+                "ground_truth_mounted_only_by_evaluation": True,
             },
         }
     )
@@ -584,6 +602,8 @@ def evaluate_and_log(
                 "tubeletgraph_commit": TUBELETGRAPH_COMMIT,
                 "detectron2_commit": DETECTRON2_COMMIT,
                 "ground_truth_used_for_inference": False,
+                "ground_truth_volume": GROUND_TRUTH_VOLUME_NAME,
+                "ground_truth_mounted_only_by_evaluation": True,
                 "metric_policy": summary["policy"],
             },
         )

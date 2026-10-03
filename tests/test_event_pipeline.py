@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from scripts.build_event_draft import build_draft
 from scripts.map_event_states import (
@@ -98,6 +101,7 @@ class EventPipelineTests(unittest.TestCase):
         mapped = map_events(
             draft,
             state_dict,
+            Path("unused"),
             RefusingClient(),
             "unused",
             allowed_states=["on dish"],
@@ -112,6 +116,59 @@ class EventPipelineTests(unittest.TestCase):
             "abstained_no_tubelet_text",
         )
         self.assertFalse(mapped["provenance"]["video_frames_used_for_mapping"])
+
+    def test_adapter_uses_image_and_text_without_identifiers_or_frame_numbers(self) -> None:
+        calls = []
+
+        class Completions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="on dish"))]
+                )
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=Completions())
+        )
+        draft = {
+            "video_id": "S12_Sandwich_7150991-2470",
+            "object": "bread slices",
+            "clip_start_global": 2824,
+            "num_local_frames": 3,
+            "initial_raw": {"description": "bread resting on a dish"},
+            "transitions": [],
+            "provenance": {},
+        }
+        state_dict = {
+            "s2i": {"on dish": 0, "placed": 1},
+            "all2one": {},
+            "one2all": {"on dish": ["on dish", "on plate"], "placed": ["placed"]},
+        }
+        with TemporaryDirectory() as directory:
+            frames_dir = Path(directory)
+            (frames_dir / "0000000.jpg").write_bytes(b"synthetic-jpeg")
+            mapped = map_events(
+                draft,
+                state_dict,
+                frames_dir,
+                client,
+                "gpt-4.1",
+                allowed_states=["on dish", "placed"],
+            )
+
+        self.assertEqual(mapped["initial_state"], "on dish")
+        content = calls[0]["messages"][1]["content"]
+        prompt = content[0]["text"]
+        self.assertNotIn("S12_Sandwich_7150991-2470", prompt)
+        self.assertNotIn("2824", prompt)
+        self.assertNotIn("0000000", prompt)
+        self.assertIn("bread resting on a dish", prompt)
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(content[1]["image_url"]["detail"], "low")
+        self.assertTrue(mapped["provenance"]["video_frames_used_for_mapping"])
+        self.assertFalse(mapped["provenance"]["video_identifiers_used_in_prompt"])
+        self.assertFalse(mapped["provenance"]["frame_numbers_used_in_prompt"])
 
     def test_semantic_evidence_ignores_nonsemantic_metadata(self) -> None:
         self.assertEqual(

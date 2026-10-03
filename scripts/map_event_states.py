@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import json
+import mimetypes
 import os
 from pathlib import Path
 import re
@@ -79,13 +81,36 @@ def semantic_evidence(raw_context: dict[str, Any]) -> list[str]:
     return evidence
 
 
+def image_payload(path: Path) -> dict[str, Any]:
+    """Return a low-detail vision payload without exposing a filename or path."""
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:{mime_type};base64,{encoded}",
+            "detail": "low",
+        },
+    }
+
+
+def frame_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def classify_event(
     client: OpenAI,
     *,
     model: str,
     target_object: str,
-    local_frame: int,
     raw_context: dict[str, Any],
+    frame_path: Path,
     allowed: list[str],
     state_dict: dict[str, Any],
 ) -> tuple[str | None, list[str]]:
@@ -100,17 +125,16 @@ def classify_event(
     }
     prompt = (
         "Map a TubeletGraph prediction to the MOSCATO state vocabulary. "
-        "This is prediction post-processing: you are not given and must not infer "
-        "from any ground-truth annotation timeline or video frame. Use only the raw "
-        "TubeletGraph semantic text. Return exactly one state from ALLOWED_STATES and no "
-        "explanation. The selected state must describe the current visual state of "
-        f"the target object {target_object!r} at local frame {local_frame}.\n\n"
-        "Selection policy: choose the most specific state directly supported by the "
-        "TubeletGraph text. An explicitly described spatial relation (for example, "
-        "an object resting on a plate or dish) is more specific than a generic result "
-        "such as 'placed' or 'relocated'. Use those generic labels only when no more "
-        "specific relation or attribute is present in the supplied text. Do not add "
-        "information or infer the person's current action.\n\n"
+        "This is prediction post-processing. You are not given any ground-truth "
+        "annotation timeline, video identifier, filename, or frame number. Use only "
+        "the supplied image and raw TubeletGraph semantic text. Return exactly one "
+        "state from ALLOWED_STATES and no explanation. The selected state must "
+        f"describe the current visible state of the target object {target_object!r}.\n\n"
+        "Selection policy: choose the most specific state directly supported jointly "
+        "by the image and TubeletGraph text. An explicitly visible spatial relation "
+        "or attribute is more specific than a generic result such as 'placed' or "
+        "'relocated'. Use a generic label only when no more specific allowed state is "
+        "visually or textually supported. Do not infer an unobserved action.\n\n"
         f"RAW_TUBELET_SEMANTIC_TEXT={json.dumps(evidence)}\n\n"
         f"ALLOWED_STATES_WITH_ALIASES={json.dumps(state_guide, sort_keys=True)}\n\n"
         f"ALLOWED_STATES={json.dumps(allowed)}"
@@ -129,13 +153,17 @@ def classify_event(
                 {
                     "role": "system",
                     "content": (
-                        "You are a deterministic semantic state-label normalizer. "
+                        "You are a deterministic visual and semantic state-label "
+                        "normalizer. "
                         "Follow the supplied closed vocabulary exactly."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": prompt + correction,
+                    "content": [
+                        {"type": "text", "text": prompt + correction},
+                        image_payload(frame_path),
+                    ],
                 },
             ],
             temperature=0,
@@ -153,6 +181,7 @@ def classify_event(
 def map_events(
     draft: dict[str, Any],
     state_dict: dict[str, Any],
+    frames_dir: Path,
     client: OpenAI,
     model: str,
     allowed_states: list[str] | None = None,
@@ -161,13 +190,14 @@ def map_events(
     allowed = canonical_states(state_dict, allowed_states)
     target_object = mapped["object"]
     num_local_frames = int(mapped["num_local_frames"])
+    initial_frame_path = frames_dir / "0000000.jpg"
 
     initial_state, initial_responses = classify_event(
         client,
         model=model,
         target_object=target_object,
-        local_frame=0,
         raw_context=mapped.get("initial_raw", {}),
+        frame_path=initial_frame_path,
         allowed=allowed,
         state_dict=state_dict,
     )
@@ -177,6 +207,11 @@ def map_events(
         "raw_responses": initial_responses,
         "mapped_state": initial_state,
         "status": "mapped" if initial_state is not None else "abstained_no_tubelet_text",
+        "semantic_evidence": semantic_evidence(mapped.get("initial_raw", {})),
+        "input_frame_filename": initial_frame_path.name,
+        "input_frame_sha256": (
+            frame_sha256(initial_frame_path) if initial_responses else None
+        ),
     }
 
     last_frame = -1
@@ -189,12 +224,14 @@ def map_events(
         if local_frame <= last_frame:
             raise ValueError("Transition frames must be unique and strictly increasing")
         last_frame = local_frame
+        frame_path = frames_dir / f"{local_frame:07d}.jpg"
+        raw_context = {"raw_nodes": transition.get("raw_nodes", [])}
         state, responses = classify_event(
             client,
             model=model,
             target_object=target_object,
-            local_frame=local_frame,
-            raw_context={"raw_nodes": transition.get("raw_nodes", [])},
+            raw_context=raw_context,
+            frame_path=frame_path,
             allowed=allowed,
             state_dict=state_dict,
         )
@@ -204,6 +241,9 @@ def map_events(
             "raw_responses": responses,
             "mapped_state": state,
             "status": "mapped" if state is not None else "abstained_no_tubelet_text",
+            "semantic_evidence": semantic_evidence(raw_context),
+            "input_frame_filename": frame_path.name,
+            "input_frame_sha256": frame_sha256(frame_path) if responses else None,
         }
 
     vocabulary_digest = hashlib.sha256(
@@ -225,7 +265,11 @@ def map_events(
             "state_mapping_status": overall_mapping_status,
             "state_mapping_model": model,
             "ground_truth_used_for_mapping": False,
-            "video_frames_used_for_mapping": False,
+            "video_frames_used_for_mapping": bool(mapped_count),
+            "adapter_input_mode": "tubelet_semantic_text_plus_single_event_frame",
+            "adapter_image_detail": "low",
+            "video_identifiers_used_in_prompt": False,
+            "frame_numbers_used_in_prompt": False,
             "allowed_states_sha256": vocabulary_digest,
             "allowed_states": allowed,
         }
@@ -237,6 +281,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--draft", type=Path, required=True)
     parser.add_argument("--state-dict", type=Path, required=True)
+    parser.add_argument("--frames", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--model", default="gpt-4.1")
     args = parser.parse_args()
@@ -249,6 +294,7 @@ def main() -> None:
     mapped = map_events(
         load_json(args.draft),
         load_json(args.state_dict),
+        args.frames,
         OpenAI(),
         args.model,
     )

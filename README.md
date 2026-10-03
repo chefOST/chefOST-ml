@@ -80,6 +80,7 @@ One-time setup:
 python3 -m pip install modal
 modal setup
 modal volume create tubelet-data
+modal volume create tubelet-ground-truth
 modal secret create tubelet-openai OPENAI_API_KEY="$OPENAI_API_KEY"
 modal secret create wandb WANDB_API_KEY="$WANDB_API_KEY"
 ```
@@ -108,13 +109,20 @@ modal volume put \
   /S12_Sandwich_7150991-2470/state_dict.json
 
 modal volume put \
-  tubelet-data \
+  tubelet-ground-truth \
   annotations/ground_truth/CMU/gt_annotations_cmu.json \
+  /S12_Sandwich_7150991-2470/ground_truth.json
+
+# After verifying the upload above, remove the legacy inference-volume copy.
+modal volume rm \
+  tubelet-data \
   /S12_Sandwich_7150991-2470/ground_truth.json
 ```
 
-The ground truth is mounted only by the separate evaluation function. The GPU
-inference function never reads it.
+Ground truth lives in the separate `tubelet-ground-truth` Volume. That Volume is
+mounted only by the evaluation function; it is not mounted in the GPU inference
+function. The runner also refuses inference if a legacy ground-truth file is
+found on `tubelet-data`.
 
 First run TubeletGraph's bundled example after the secret exists:
 
@@ -168,13 +176,16 @@ this command inside Modal with the same secret):
 python3 scripts/map_event_states.py \
   --draft work/S12_Sandwich_7150991-2470/tubelet_events.draft.json \
   --state-dict vocabulary/CMU/state_dict.json \
+  --frames work/S12_Sandwich_7150991-2470/frames \
   --out work/S12_Sandwich_7150991-2470/tubelet_events.json
 ```
 
-The adapter sees only TubeletGraph semantic text and the allowed state names. It
-does not inspect video frames or load `gt_annotations_cmu.json`. Missing semantic
-text becomes an explicit abstention rather than a generated state. Raw responses,
-mapped labels, and abstentions remain in the output for audit.
+The adapter sees one event-aligned image, TubeletGraph semantic text, and the
+allowed state names. It does not load `gt_annotations_cmu.json`, and video IDs,
+filenames, local frame numbers, and absolute frame numbers are excluded from the
+model prompt. Missing semantic text becomes an explicit abstention rather than a
+generated state. Image hashes, semantic evidence, raw responses, mapped labels,
+and abstentions remain in the output for audit.
 
 Evaluate only after inspecting those mappings:
 
