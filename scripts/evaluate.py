@@ -78,6 +78,34 @@ def densify(
     return dense
 
 
+def expand_to_source_frames(
+    predictions: list[str | None], events: dict[str, Any]
+) -> list[str | None]:
+    """Repeat each subsampled prediction ``frame_stride`` times.
+
+    Runs made with ``--frame-stride N`` keep every N-th source frame, so the
+    densified timeline is at the reduced rate. Ground truth is per source
+    frame, so each prediction is held for the N source frames it stands for,
+    truncated to ``source_frame_count`` when the clip length is not a multiple
+    of the stride.
+    """
+    stride = int(events.get("frame_stride", 1))
+    if stride < 1:
+        raise ValueError("frame_stride must be at least 1")
+    if stride == 1:
+        return list(predictions)
+    source_count = int(
+        events.get("source_frame_count", len(predictions) * stride)
+    )
+    if not len(predictions) * stride - stride < source_count <= len(predictions) * stride:
+        raise ValueError(
+            f"source_frame_count={source_count} is inconsistent with "
+            f"{len(predictions)} predictions at stride {stride}"
+        )
+    expanded = [state for state in predictions for _ in range(stride)]
+    return expanded[:source_count]
+
+
 def f1_threshold_curve(
     y_true: list[list[int]],
     y_score: list[list[float]],
@@ -131,7 +159,7 @@ def evaluate_events(
         )
 
     gt_timeline = video_gt["state"][object_name]
-    predictions = densify(events, state_dict)
+    predictions = expand_to_source_frames(densify(events, state_dict), events)
     if clip_start < 0 or clip_start >= len(gt_timeline):
         raise ValueError(f"clip_start_global {clip_start} is outside the GT timeline")
     if clip_start + len(predictions) > len(gt_timeline):
@@ -210,6 +238,7 @@ def evaluate_events(
         "video_id": video_id,
         "object": object_name,
         "clip_start_global": clip_start,
+        "frame_stride": int(events.get("frame_stride", 1)),
         "predicted_frames": len(predictions),
         "evaluated_frames": evaluated,
         "skipped_empty_gt_frames": len(predictions) - evaluated,

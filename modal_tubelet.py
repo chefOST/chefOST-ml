@@ -133,6 +133,9 @@ tubelet_image = (
         "/opt/moscato/configs/cmu_object_state_candidates.json",
         copy=True,
     )
+    .run_commands(
+        "python /opt/moscato/scripts/patch_tubeletgraph.py /opt/TubeletGraph",
+    )
 )
 
 evaluation_image = (
@@ -180,9 +183,11 @@ def run_tubelet(
     object_id: int = DEFAULT_OBJECT_ID,
     expected_frames: int = DEFAULT_EXPECTED_FRAMES,
     max_frames: int = 0,
+    frame_stride: int = 1,
     run_name: str = "",
     smoke_test: bool = False,
     persist_intermediates: bool = False,
+    later_tracking: bool = True,
 ) -> dict:
     """Validate inputs, run TubeletGraph, map states, and persist artifacts."""
     import json
@@ -205,6 +210,14 @@ def run_tubelet(
         raise ValueError("fps must be positive")
     if max_frames < 0:
         raise ValueError("max_frames must be non-negative")
+    if frame_stride < 1:
+        raise ValueError("frame_stride must be at least 1")
+    if fps % frame_stride != 0:
+        raise ValueError(
+            f"fps={fps} must be divisible by frame_stride={frame_stride} "
+            "so the subsampled clip has an integer frame rate"
+        )
+    tubelet_fps = fps // frame_stride
 
     video_id = _safe_component(video_id, "video_id")
     resolved_run_name = _run_name(run_name)
@@ -243,11 +256,14 @@ def run_tubelet(
         "smoke_test": smoke_test,
         "video_id": logical_video_id,
         "fps": fps,
+        "frame_stride": int(frame_stride),
+        "tubelet_fps": tubelet_fps,
         "clip_start_global": None if smoke_test else int(clip_start_global),
         "target_object": None if smoke_test else object_name,
         "target_object_id": None if smoke_test else int(object_id),
         "expected_local_frames": expected_input_frames,
         "max_frames": int(max_frames) or None,
+        "later_object_tracking": bool(later_tracking),
         "tubeletgraph_repository": TUBELETGRAPH_REPOSITORY,
         "tubeletgraph_commit": TUBELETGRAPH_COMMIT,
         "detectron2_commit": DETECTRON2_COMMIT,
@@ -306,6 +322,11 @@ def run_tubelet(
                     f"max_frames={max_frames} exceeds the {source_frame_count} input frames"
                 )
             frame_paths = frame_paths[:max_frames]
+        # Keep every ``frame_stride``-th frame (e.g. 30 fps -> 5 fps with 6).
+        # Local frames are renumbered consecutively below; ``frame_stride`` is
+        # recorded so evaluation can expand predictions back to source frames.
+        selected_source_count = len(frame_paths)
+        frame_paths = frame_paths[::frame_stride]
 
         first_frame = Image.open(frame_paths[0])
         with Image.open(input_mask) as mask_image:
@@ -334,8 +355,8 @@ def run_tubelet(
         local_mask = local_input_root / f"{logical_video_id}_0000000.png"
         local_input_root.mkdir(parents=True, exist_ok=True)
         local_frames.mkdir(parents=True)
-        for frame_path in frame_paths:
-            shutil.copy2(frame_path, local_frames / frame_path.name)
+        for local_index, frame_path in enumerate(frame_paths):
+            shutil.copy2(frame_path, local_frames / f"{local_index:07d}.jpg")
         # TubeletGraph's loader requires an indexed PNG. Preserve the numeric
         # object IDs while normalizing legacy grayscale masks to palette mode.
         mask_uint8 = np.ascontiguousarray(mask, dtype=np.uint8)
@@ -362,9 +383,10 @@ def run_tubelet(
             "--input_mask",
             str(local_mask),
             "--fps",
-            str(fps),
+            str(tubelet_fps),
         ]
         manifest["source_input_frame_count"] = source_frame_count
+        manifest["selected_source_frame_count"] = selected_source_count
         manifest["input_frame_count"] = len(frame_paths)
         manifest["input_dimensions"] = [first_frame.width, first_frame.height]
         manifest["mask_values"] = mask_values
@@ -375,9 +397,13 @@ def run_tubelet(
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
         with log_path.open("w", encoding="utf-8") as log_handle:
+            tubelet_env = dict(os.environ)
+            if not later_tracking:
+                tubelet_env["TUBELETGRAPH_SKIP_LATER_TRACKING"] = "1"
             process = subprocess.Popen(
                 command,
                 cwd=repository,
+                env=tubelet_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -428,6 +454,10 @@ def run_tubelet(
                 "clip_end_global": int(clip_start_global) + len(frame_paths),
             }
             draft = build_draft(prediction, event_config)
+            draft["frame_stride"] = int(frame_stride)
+            draft["source_fps"] = int(fps)
+            draft["tubelet_fps"] = int(tubelet_fps)
+            draft["source_frame_count"] = int(selected_source_count)
             draft_path = run_dir / "tubelet_events.draft.json"
             draft_path.write_text(json.dumps(draft, indent=2) + "\n")
             events = map_events(
@@ -633,9 +663,11 @@ def main(
     object_id: int = DEFAULT_OBJECT_ID,
     expected_frames: int = DEFAULT_EXPECTED_FRAMES,
     max_frames: int = 0,
+    frame_stride: int = 1,
     run_name: str = "",
     smoke_test: bool = False,
     persist_intermediates: bool = False,
+    later_tracking: bool = True,
     evaluate_run_name: str = "",
     wandb_project: str = DEFAULT_WANDB_PROJECT,
     wandb_entity: str = "",
@@ -665,8 +697,10 @@ def main(
         object_id=object_id,
         expected_frames=expected_frames,
         max_frames=max_frames,
+        frame_stride=frame_stride,
         run_name=run_name,
         smoke_test=smoke_test,
         persist_intermediates=persist_intermediates,
+        later_tracking=later_tracking,
     )
     print(json.dumps(result, indent=2))

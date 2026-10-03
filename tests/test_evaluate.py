@@ -103,3 +103,26 @@ class EvaluateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExpandToSourceFramesTests(unittest.TestCase):
+    def test_stride_one_is_identity(self) -> None:
+        from scripts.evaluate import expand_to_source_frames
+
+        self.assertEqual(expand_to_source_frames(["a", "b"], {}), ["a", "b"])
+
+    def test_stride_repeats_and_truncates(self) -> None:
+        from scripts.evaluate import expand_to_source_frames
+
+        events = {"frame_stride": 3, "source_frame_count": 5}
+        self.assertEqual(
+            expand_to_source_frames(["a", "b"], events), ["a", "a", "a", "b", "b"]
+        )
+
+    def test_inconsistent_source_count_rejected(self) -> None:
+        from scripts.evaluate import expand_to_source_frames
+
+        with self.assertRaises(ValueError):
+            expand_to_source_frames(
+                ["a", "b"], {"frame_stride": 3, "source_frame_count": 2}
+            )
